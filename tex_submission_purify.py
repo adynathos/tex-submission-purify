@@ -287,11 +287,15 @@ class TexSubmissionCleaner:
 
 def str_method_deleted_node(self):
 	""" This node and its children are not written to the output file """
+	print('str', self.__repr__())
 	return ''
 
 def node_cmd_remove(node, cleaner, **_):
 	""" This node and its children are not written to the output file """
 	node.__str__ = str_method_deleted_node
+	expr = getattr(node, 'expr', None)
+	if expr is not None:
+		expr.__str__ = str_method_deleted_node
 
 	cleaner.stats['num_cmds_removed_' + node.name] += 1
 
@@ -304,6 +308,9 @@ def str_method_short_circuited_node(self):
 def node_cmd_shortcircuit(node, cleaner, **_):
 	""" This is replaced with its children """
 	node.__str__ = str_method_short_circuited_node
+	expr = getattr(node, 'expr', None)
+	if expr is not None:
+		expr.__str__ = str_method_short_circuited_node
 
 	cleaner.stats['num_cmds_shortcircuited_' + node.name] += 1
 
