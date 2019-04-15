@@ -1,31 +1,12 @@
-
+#!/usr/bin/env python3
 from pathlib import Path
 from collections import deque, namedtuple, Counter
 from enum import Enum
 from shutil import rmtree, copy as copy_file
-import os
 
 from TexSoup import TexSoup
+from TexSoup.data import TokenWithPosition, TexNode
 import click
-
-from TexSoup.data import TokenWithPosition, Arg, RArg, TexNode, TexEnv, TexExpr, TexCmd
-
-def patch_TexSoup():
-	"""
-	(1)
-	Iterate over contents of Arg
-	"""
-	def Arg_patch_contents(self):
-		for expr in self.exprs:
-			if isinstance(expr, (TexEnv, TexCmd)):
-				yield TexNode(expr)
-			else:
-				yield expr
-
-	Arg.contents = property(Arg_patch_contents)
-
-
-patch_TexSoup()
 
 class NodeAction(Enum):
 	Continue = 0
@@ -43,20 +24,23 @@ class TexSubmissionCleaner:
 	FILE_TYPE_IGNORE = 'ignore'
 
 	def __init__(self, root_doc_path, out_dir):
+
+		# File queues
 		self.files_to_process = deque()
 		self.files_aware_of = set()
-	
+
+		# Processors
 		self.setup_file_processors()
 		self.setup_node_processors()
-		self.files_to_process = deque()
-
 		self.stats = Counter()
 
+		self.keep_empty_comments = False
+		self.out_root_doc_name = 'ms'
+
+		# Paths
 		self.root_doc_path = Path(root_doc_path).resolve()
 		self.root_dir = self.root_doc_path.parent
 		self.out_dir = Path(out_dir).resolve()
-
-		self.all_files = set(self.root_dir.glob('**/*'))
 
 		if self.out_dir == self.root_dir:
 			raise ValueError('out_dir must be different from root dir')
@@ -64,6 +48,7 @@ class TexSubmissionCleaner:
 		if self.out_dir in self.root_dir.parents:
 			raise ValueError(f'Root dir must not be inside out dir (root_dir={self.root_dir}, out_dir={self.out_dir}')
 
+		self.all_files = set(self.root_dir.glob('**/*'))
 
 	def setup_file_processors(self):
 		self.file_processors = {
@@ -82,23 +67,30 @@ class TexSubmissionCleaner:
 		]
 		self.node_processors = {}
 
-		self.register_node_processor('comment', node_cmd_remove)
-		self.register_node_processor('input', node_input)
-		self.register_node_processor('includegraphics', node_includegraphics)
+		# we will use the names to remove their declarations too
+		self.removed_command_names = set()
+
+		self.register_node_processor('input', self.node_input)
+		self.register_node_processor('includegraphics', self.node_includegraphics)
+		self.register_node_processor('newcommand', self.node_newcommand)
+
+		self.commands_to_remove('comment')
 
 	def commands_to_remove(self, *commands):
 		if commands.__len__() == 1 and isinstance(commands[0], (list, tuple)):
 			commands = commands[0]
 
 		for cmd in commands:
-			self.register_node_processor(cmd, node_cmd_remove)
+			self.removed_command_names.add(cmd)
+			self.register_node_processor(cmd, self.node_cmd_remove)
 
 	def commands_to_short_circuit(self, *commands):
 		if commands.__len__() == 1 and isinstance(commands[0], (list, tuple)):
 			commands = commands[0]
 
 		for cmd in commands:
-			self.register_node_processor(cmd, node_cmd_shortcircuit)
+			self.removed_command_names.add(cmd)
+			self.register_node_processor(cmd, self.node_cmd_shortcircuit)
 
 	def additional_files_to_keep(self, *to_keep):
 		if to_keep.__len__() == 1 and isinstance(to_keep[0], (list, tuple)):
@@ -115,7 +107,8 @@ class TexSubmissionCleaner:
 				raise FileNotFoundError(f'File {path} requested by --keep-file does not exist')
 
 	def clear_out_dir(self):
-		rmtree(self.out_dir)
+		if self.out_dir.exists():
+			rmtree(self.out_dir)
 
 	def add_file_to_process(self, path, type):
 		path = Path(path)
@@ -136,14 +129,14 @@ class TexSubmissionCleaner:
 
 		for ext in ['.tex'] + LATEX_COMPILATION_FILES_TO_KEEP:
 			rename_from = (self.out_dir / root_doc_name).with_suffix(ext)
-			rename_to = (self.out_dir / 'ms').with_suffix(ext)
+			rename_to = (self.out_dir / self.out_root_doc_name).with_suffix(ext)
 
 			if rename_from.is_file() and not rename_to.exists():
 				rename_from.rename(rename_to)
 
 
 	def print_statistics(self):
-		print('\n=== Statistics ===\n	' + '\n	'.join(f'{sk}: {sv}' for sk, sv in self.stats.items()))
+		print('\n=== Statistics ===\n	' + '\n	'.join(f'{sk}: {sv}' for sk, sv in sorted(self.stats.items())))
 
 	def get_unused_files(self):
 		# all_files set in constructor
@@ -171,9 +164,6 @@ class TexSubmissionCleaner:
 			proc(path)
 		else:
 			print(f'No processor for type {type} given to file {path}')
-		
-	def process_file_ignore(self, path):
-		pass
 
 	def process_file_copy(self, path):
 		out_file_path = self.out_path(path)
@@ -192,21 +182,14 @@ class TexSubmissionCleaner:
 
 		with path.open('r') as f_in:
 			doc = TexSoup(f_in)
-		
-		# for node in doc.contents:
-		# 	self.process_tex_node(node, parent_node=doc, doc=doc)
-		
+
 		# go through the parse tree
 		self.process_tex_node(doc, parent_node = None, doc=doc)
-		
-		# for node in doc.contents:
-		# 	self.process_tex_node(node, parent_node=doc, doc=doc)
 
 		# write processed tex
 		out_file_path = self.out_path(path)
 		out_file_path.parent.mkdir(parents=True, exist_ok=True)
 		out_file_path.write_text(str(doc))
-
 
 		# ignore trash files resulting from latex compilation
 		for trash_ext in LATEX_COMPILATION_FILES_TO_IGNORE:
@@ -224,7 +207,7 @@ class TexSubmissionCleaner:
 		action = NodeAction.Continue
 
 		for f in self.token_node_processors:
-			action = f(token, parent_node=parent_node, cleaner=self)
+			action = f(token, parent_node=parent_node, doc=doc, cleaner=self)
 			
 			if action == NodeAction.StopDescent:
 				return action
@@ -250,7 +233,7 @@ class TexSubmissionCleaner:
 			
 		if isinstance(tex_node, TokenWithPosition):
 			# TokenWithPosition is just a piece of text and does not have children
-			action = self.apply_processors_to_tex_token(tex_node, parent_node, doc)
+			self.apply_processors_to_tex_token(tex_node, parent_node, doc)
 
 		elif isinstance(tex_node, TexNode):
 			action = self.apply_processors_to_tex_node(tex_node, parent_node, doc)
@@ -259,128 +242,138 @@ class TexSubmissionCleaner:
 				for child_node in tex_node.contents:
 					self.process_tex_node(child_node, parent_node=tex_node, doc=doc)
 
-		elif isinstance(tex_node, Arg):
-			for expr in tex_node.exprs:
-				if isinstance(expr, (TexEnv, TexCmd)):
-					child_node = TexNode(expr)
-				else:
-					child_node = expr
-			
-				self.process_tex_node(child_node, parent_node=tex_node, doc=doc)
-			
 		else:
 			print('	Unknown node type:', type(tex_node), 'for node', str(tex_node).split('\n')[0])
 
-	def process_token_remove_comment(self, tex_token, parent_node, **_):
-		if tex_token.text.startswith('%'):
-			tex_token.__str__ = str_method_deleted_node
+	####################################################################################
+	# Node processing functions
+	####################################################################################
 
-			self.stats['num_inline_comments'] += 1
-			
+	@staticmethod
+	def process_token_remove_comment(tex_token, cleaner, **_):
+		if tex_token.text.startswith('%'):
+			cleaner.stats['num_inline_comments'] += 1
+			tex_token.text = '%' if cleaner.keep_empty_comments else ''
 			return NodeAction.StopDescent
 
+	@staticmethod
+	def node_cmd_remove(node, cleaner, **_):
+		""" This node and its children are not written to the output file """
+		node.delete()
+		cleaner.stats['num_cmds_removed_' + node.name] += 1
+		return NodeAction.StopDescent
 
-####################################################################################
-# Node processing functions
-####################################################################################
+	@staticmethod
+	def node_cmd_shortcircuit(node, cleaner, **_):
+		""" This is replaced with its children """
+		if node.args:
+			# Only replace when the command has children.
+			# if it does not have children, it is being declared with \newcommand
+			node.replace_with(*node.contents)
+			cleaner.stats['num_cmds_shortcircuited_' + node.name] += 1
+		return NodeAction.StopDescent
 
+	@staticmethod
+	def node_newcommand(node, cleaner, **_):
+		command_being_declared = node.args[0].value.lstrip('\\')
 
-def str_method_deleted_node(self):
-	""" This node and its children are not written to the output file """
-	print('str', self.__repr__())
-	return ''
+		if command_being_declared in cleaner.removed_command_names:
+			node.delete()
+			cleaner.stats['num_declarations_removed'] += 1
+			return NodeAction.StopDescent
 
-def node_cmd_remove(node, cleaner, **_):
-	""" This node and its children are not written to the output file """
-	node.__str__ = str_method_deleted_node
-	expr = getattr(node, 'expr', None)
-	if expr is not None:
-		expr.__str__ = str_method_deleted_node
+	@staticmethod
+	def node_includegraphics(node, cleaner, **_):
+		for arg in node.args:
+			if arg.type == 'required':
+				graphics_path = cleaner.root_dir / arg.value
+				if graphics_path.is_file():
+					cleaner.add_file_to_process(graphics_path, cleaner.FILE_TYPE_GRAPHICS)
+				else:
+					print(f'Failed to find graphic {arg.value} included from {cleaner.current_doc_path_relative}')
 
-	cleaner.stats['num_cmds_removed_' + node.name] += 1
+				return
 
-	return NodeAction.StopDescent
+	@staticmethod
+	def find_included_document_path(root_dir, input_link):
+		no_ext = root_dir / str(input_link)
 
-def str_method_short_circuited_node(self):
-	""" This is replaced with its children """
-	return ' '.join(map(str, self.contents))
+		if no_ext.is_file():
+			return no_ext
 
-def node_cmd_shortcircuit(node, cleaner, **_):
-	""" This is replaced with its children """
-	node.__str__ = str_method_short_circuited_node
-	expr = getattr(node, 'expr', None)
-	if expr is not None:
-		expr.__str__ = str_method_short_circuited_node
+		with_ext = no_ext.with_suffix('.tex')
 
-	cleaner.stats['num_cmds_shortcircuited_' + node.name] += 1
+		if with_ext.is_file():
+			return with_ext
 
-	return NodeAction.StopDescent
+		return None
 
+	@staticmethod
+	def node_input(node, parent_node, doc, cleaner):
+		input_args = list(node.contents)
 
-def find_included_document_path(root_dir, input_link):
-	no_ext = root_dir / str(input_link)
-	
-	if no_ext.is_file():
-		return no_ext
-	
-	with_ext = no_ext.with_suffix('.tex')
-	
-	if with_ext.is_file():
-		return with_ext
-	
-	return with_ext
-			
-def node_input(node, parent_node, doc, cleaner):
-	
-	input_args = list(node.contents)
-
-	if input_args.__len__() != 1:
-		print(f'Anomalous \\input, node.args should be length 1: {node}')
-	else:
-		link_target = str(input_args[0])
-
-		# try:
-		# except Exception as e:
-		# 	print('Input arg fail')
-		# 	print('Arg[0] is', input_args[0])
-		# 	print('Node is ', node)
-		# 	cleaner.node_to_inspect = node
-
-		included_document_path = find_included_document_path(cleaner.root_dir, link_target)
-
-		if included_document_path:
-			cleaner.add_file_to_process(included_document_path, cleaner.FILE_TYPE_TEX)
+		if input_args.__len__() != 1:
+			print(f'Anomalous \\input, node.args should be length 1: {node}')
 		else:
-			print(f'Failed to find file {link_target} included from {cleaner.current_doc_path_relative}')
+			link_target = str(input_args[0])
 
-def node_includegraphics(node, cleaner, **_):
-	for arg in node.args:
-		if isinstance(arg, RArg):
-			graphics_path = cleaner.root_dir / arg.value
-			if graphics_path.is_file():
-				cleaner.add_file_to_process(graphics_path, cleaner.FILE_TYPE_GRAPHICS)
+			included_document_path = cleaner.find_included_document_path(cleaner.root_dir, link_target)
+
+			if included_document_path:
+				cleaner.add_file_to_process(included_document_path, cleaner.FILE_TYPE_TEX)
 			else:
-				print(f'Failed to find graphic {arg.value} included from {cleaner.current_doc_path_relative}')
+				print(f'Failed to find file {link_target} included from {cleaner.current_doc_path_relative}')
+
 
 ####################################################################################
 # CLI interface
 ####################################################################################
 
-@click.command
-@click.argument('src_root_document', type=click.Path(exists=True, file_okay=True, dir_okay=False))
-@click.argument('dest_dir', type=click.Path())
-@click.option('--remove-cmd', type=str, help='Separate commands with , but not space, for example: comment,KL,WL')
-@click.option('--short-circuit-cmd', type=str, help='These commands are replaced with their contents. Separate commands with , but not space, for example: kl,wl')
-@click.option('--keep-file', type=click.Path(), multiple=True)
-@click.option('--clear-out-dir', is_flag=True, default=False)
-def main(src_root_document, dest_dir, remove_cmd = None, short_circuit_cmd=None, keep_file = [], clear_out_dir=False):
+
+@click.command()
+@click.argument(
+	'src_root_document', type=click.Path(exists=True, file_okay=True, dir_okay=False))
+    #help='Example: my_article/top.tex') # click.Arguments don't have `help`, it is a deficiency of click
+@click.argument(
+	'dest_dir', type=click.Path())
+    #help='Example: my_article_arxiv_submission')
+@click.option(
+	'--remove-cmd', type=str,
+	help='Commands to be removed (\\comment is removed by default). Separate commands with , but not space, for example: comment,KL,WL')
+@click.option(
+	'--short-circuit-cmd', type=str,
+	help='Commands to be replaced with their contents. Separate commands with , but not space, for example: kl,wl')
+@click.option(
+	'--keep-file', type=click.Path(), multiple=True,
+    help='Copy this file to the output directory even if it is not references, repeat the option to add more files')
+@click.option(
+	'--out-root-doc-name', type=str,
+    help='Rename the root doc to this name, by default `ms.tex`')
+@click.option(
+	'--clear-out-dir', is_flag=True, default=False,
+    help='Delete the output directory before outputting')
+@click.option(
+	'--keep-empty-comments', is_flag=True, default=False,
+	help='Keeps the % but removes the comment content (by default whole comment including % is removed)')
+def main(
+		src_root_document, dest_dir,
+		remove_cmd = None, short_circuit_cmd=None,
+		keep_file = [], out_root_doc_name = None,
+		clear_out_dir=False, keep_empty_comments=False):
 	src_root_document = Path(src_root_document)
 	dest_dir = Path(dest_dir)
 
 	cleaner = TexSubmissionCleaner(src_root_document, dest_dir)
 
+	cleaner.keep_empty_comments = keep_empty_comments
+
 	if clear_out_dir:
 		cleaner.clear_out_dir()
+
+	if out_root_doc_name:
+		if out_root_doc_name.endswith('.tex'):
+			out_root_doc_name = out_root_doc_name[:-4]
+		cleaner.out_root_doc_name = out_root_doc_name
 
 	if remove_cmd:
 		cmds_to_remove = remove_cmd.split(',')
@@ -397,7 +390,6 @@ def main(src_root_document, dest_dir, remove_cmd = None, short_circuit_cmd=None,
 	cleaner.run()
 	cleaner.notify_about_unused_files()
 	cleaner.print_statistics()
-
 
 
 if __name__ == '__main__':

@@ -25,5 +25,11 @@ Double %% at the end
 	Weird \stuff here
 }
 
+\newcommand{\kl}[1]{\ifdraft {\color{blue}{#1}} \else {#1}\fi}
+
+This cmd to be \kl{short circuited $x=1$}.
+
+This cmd to be \KL{(destroyed $x=2$)}.
+
 
 
