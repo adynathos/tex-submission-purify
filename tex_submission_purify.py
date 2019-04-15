@@ -34,7 +34,7 @@ class TexSubmissionCleaner:
 		self.setup_node_processors()
 		self.stats = Counter()
 
-		self.keep_empty_comments = False
+		self.keep_empty_comments = True
 		self.out_root_doc_name = 'ms'
 
 		# Paths
@@ -235,15 +235,19 @@ class TexSubmissionCleaner:
 			# TokenWithPosition is just a piece of text and does not have children
 			self.apply_processors_to_tex_token(tex_node, parent_node, doc)
 
-		elif isinstance(tex_node, TexNode):
-			action = self.apply_processors_to_tex_node(tex_node, parent_node, doc)
+		#elif isinstance(tex_node, TexNode):
+		else:
+			if hasattr(tex_node, 'name'):
+				action = self.apply_processors_to_tex_node(tex_node, parent_node, doc)
+			else:
+				action = NodeAction.Continue
 
 			if action != NodeAction.StopDescent:
 				for child_node in tex_node.contents:
 					self.process_tex_node(child_node, parent_node=tex_node, doc=doc)
 
-		else:
-			print('	Unknown node type:', type(tex_node), 'for node', str(tex_node).split('\n')[0])
+		# else:
+		# 	print('	Unknown node type:', type(tex_node), 'for node', str(tex_node).split('\n')[0])
 
 	####################################################################################
 	# Node processing functions
@@ -326,7 +330,7 @@ class TexSubmissionCleaner:
 
 
 ####################################################################################
-# CLI interface
+# CLI
 ####################################################################################
 
 
@@ -353,19 +357,19 @@ class TexSubmissionCleaner:
 	'--clear-out-dir', is_flag=True, default=False,
     help='Delete the output directory before outputting')
 @click.option(
-	'--keep-empty-comments', is_flag=True, default=False,
-	help='Keeps the % but removes the comment content (by default whole comment including % is removed)')
+	'--remove-comments-completely', is_flag=True, default=False,
+	help='Removes the comments including the % (by default the comment body is removed but the % is kept)')
 def main(
 		src_root_document, dest_dir,
 		remove_cmd = None, short_circuit_cmd=None,
 		keep_file = [], out_root_doc_name = None,
-		clear_out_dir=False, keep_empty_comments=False):
+		clear_out_dir=False, remove_comments_completely=False):
 	src_root_document = Path(src_root_document)
 	dest_dir = Path(dest_dir)
 
 	cleaner = TexSubmissionCleaner(src_root_document, dest_dir)
 
-	cleaner.keep_empty_comments = keep_empty_comments
+	cleaner.keep_empty_comments = not remove_comments_completely
 
 	if clear_out_dir:
 		cleaner.clear_out_dir()
