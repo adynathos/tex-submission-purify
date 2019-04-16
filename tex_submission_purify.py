@@ -3,6 +3,7 @@ from pathlib import Path
 from collections import deque, namedtuple, Counter
 from enum import Enum
 from shutil import rmtree, copy as copy_file
+import re
 
 from TexSoup import TexSoup
 from TexSoup.data import TokenWithPosition, TexNode
@@ -50,6 +51,8 @@ class TexSubmissionCleaner:
 
 		self.all_files = set(self.root_dir.glob('**/*'))
 
+		self.set_filename_forbidden_characters()
+
 	def setup_file_processors(self):
 		self.file_processors = {
 			self.FILE_TYPE_TEX: self.process_file_tex,
@@ -75,6 +78,9 @@ class TexSubmissionCleaner:
 		self.register_node_processor('newcommand', self.node_newcommand)
 
 		self.commands_to_remove('comment')
+
+	def set_filename_forbidden_characters(self, regexp=r'[^a-zA-Z0-9_+-\.,=]'):
+		self.filelame_forbidden_regexp = re.compile(regexp) if regexp else None
 
 	def commands_to_remove(self, *commands):
 		if commands.__len__() == 1 and isinstance(commands[0], (list, tuple)):
@@ -292,6 +298,9 @@ class TexSubmissionCleaner:
 			if arg.type == 'required':
 				graphics_path = cleaner.root_dir / arg.value
 				if graphics_path.is_file():
+					#renamed_file = self.filelame_forbidden_regexp
+
+
 					cleaner.add_file_to_process(graphics_path, cleaner.FILE_TYPE_GRAPHICS)
 				else:
 					print(f'Failed to find graphic {arg.value} included from {cleaner.current_doc_path_relative}')
@@ -359,11 +368,17 @@ class TexSubmissionCleaner:
 @click.option(
 	'--remove-comments-completely', is_flag=True, default=False,
 	help='Removes the comments including the % (by default the comment body is removed but the % is kept)')
+@click.option(
+	'--arxiv-filenames/--no-arxiv-filenames', default=True,
+	help='Alter file names to only contain [a-z A-Z 0-9 _ + - . , =] characters, arXiv will complain if name contains other characters.'
+)
 def main(
 		src_root_document, dest_dir,
 		remove_cmd = None, short_circuit_cmd=None,
 		keep_file = [], out_root_doc_name = None,
-		clear_out_dir=False, remove_comments_completely=False):
+		clear_out_dir=False, remove_comments_completely=False,
+		arxiv_filenames=True,
+		):
 	src_root_document = Path(src_root_document)
 	dest_dir = Path(dest_dir)
 
@@ -388,6 +403,9 @@ def main(
 		cmds_to_sc = short_circuit_cmd.split(',')
 		print('Short-circuiting commands:', ', '.join(cmds_to_sc))
 		cleaner.commands_to_remove(*cmds_to_sc)
+
+	if not arxiv_filenames:
+		cleaner.set_filename_forbidden_characters(None)
 
 	cleaner.additional_files_to_keep(keep_file)
 
