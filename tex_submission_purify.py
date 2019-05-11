@@ -71,8 +71,10 @@ class TexSubmissionCleaner:
 		self.removed_command_names = set()
 
 		self.register_node_processor('input', self.node_input)
-		self.register_node_processor('includegraphics', self.node_includegraphics)
 		self.register_node_processor('newcommand', self.node_newcommand)
+
+		for image_cmd in ['includegraphics', 'overpic']:
+			self.register_node_processor(image_cmd, self.node_includegraphics)
 
 		self.commands_to_remove('comment')
 
