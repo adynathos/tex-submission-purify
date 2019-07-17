@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+
 from collections import deque, namedtuple, Counter
 from enum import Enum
 from shutil import rmtree, copy as copy_file
@@ -7,6 +8,7 @@ from shutil import rmtree, copy as copy_file
 from TexSoup import TexSoup
 from TexSoup.data import TokenWithPosition, TexNode
 import click
+
 
 class NodeAction(Enum):
 	Continue = 0
@@ -182,9 +184,13 @@ class TexSubmissionCleaner:
 		self.current_doc_path_relative = self.current_doc_path.relative_to(self.root_dir)
 		print('TEX', self.current_doc_path_relative)
 
+		
 		with path.open('r') as f_in:
-			doc = TexSoup(f_in)
-
+			try:
+				doc = TexSoup(f_in)
+			except EOFError as e:
+				print(f'File {path}: {e}')
+		
 		# go through the parse tree
 		self.process_tex_node(doc, parent_node = None, doc=doc)
 
@@ -359,7 +365,7 @@ class TexSubmissionCleaner:
 	'--clear-out-dir', is_flag=True, default=False,
     help='Delete the output directory before outputting')
 @click.option(
-	'--remove-comments-completely', is_flag=True, default=False,
+	'--remove-comments-completely/--keep-empty-comments', is_flag=True, default=False,
 	help='Removes the comments including the % (by default the comment body is removed but the % is kept)')
 def main(
 		src_root_document, dest_dir,
