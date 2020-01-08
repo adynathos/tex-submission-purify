@@ -74,6 +74,7 @@ class TexSubmissionCleaner:
 
 		self.register_node_processor('input', self.node_input)
 		self.register_node_processor('newcommand', self.node_newcommand)
+		self.register_node_processor('usepackage', self.node_usepackage)
 
 		for image_cmd in ['includegraphics', 'overpic']:
 			self.register_node_processor(image_cmd, self.node_includegraphics)
@@ -335,6 +336,23 @@ class TexSubmissionCleaner:
 				cleaner.add_file_to_process(included_document_path, cleaner.FILE_TYPE_TEX)
 			else:
 				print(f'Failed to find file {link_target} included from {cleaner.current_doc_path_relative}')
+
+	@staticmethod
+	def node_usepackage(node, parent_node, doc, cleaner):
+		"""
+		If `\\usepackage{p}` referfs to an existing `p.sty` file, copy that file.
+		"""
+		input_args = list(node.contents)
+
+		if input_args.__len__() != 1:
+			print(f'Anomalous \\input, node.args should be length 1: {node}')
+		else:
+			link_target = str(input_args[0])
+
+			package_path = (cleaner.root_dir / link_target).with_suffix('.sty')
+
+			if package_path.is_file():
+				cleaner.add_file_to_process(package_path, cleaner.FILE_TYPE_OPAQUE)
 
 
 ####################################################################################
