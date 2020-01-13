@@ -282,8 +282,21 @@ class TexSubmissionCleaner:
 		if node.args:
 			# Only replace when the command has children.
 			# if it does not have children, it is being declared with \newcommand
-			node.replace_with(*node.contents)
-			cleaner.stats['num_cmds_shortcircuited_' + node.name] += 1
+			try:
+				node.replace_with(*node.contents)
+				cleaner.stats['num_cmds_shortcircuited_' + node.name] += 1
+			except TypeError as e:
+				# replace_with fails inside figure captions
+				print(e)
+
+				rarg_of_caption = node.parent.args[0]
+				rarg_contents = rarg_of_caption.contents
+
+				for i, v in enumerate(rarg_contents):
+					if v == node.expr:
+						rarg_of_caption.contents = rarg_contents[:i] + list(node.contents) + rarg_contents[i+1:]
+						break
+
 		return NodeAction.StopDescent
 
 	@staticmethod
@@ -413,7 +426,7 @@ def main(
 	if short_circuit_cmd:
 		cmds_to_sc = short_circuit_cmd.split(',')
 		print('Short-circuiting commands:', ', '.join(cmds_to_sc))
-		cleaner.commands_to_remove(*cmds_to_sc)
+		cleaner.commands_to_short_circuit(*cmds_to_sc)
 
 	cleaner.additional_files_to_keep(keep_file)
 
