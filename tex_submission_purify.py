@@ -6,7 +6,7 @@ from enum import Enum
 from shutil import rmtree, copy as copy_file
 
 from TexSoup import TexSoup
-from TexSoup.data import TokenWithPosition, TexNode
+from TexSoup.data import Token, TexNode, TexCmd, TexExpr, TexText
 import click
 
 
@@ -16,6 +16,28 @@ class NodeAction(Enum):
 
 LATEX_COMPILATION_FILES_TO_IGNORE = ['.aux', '.blg', '.log', '.synctex.gz', '.pdf']
 LATEX_COMPILATION_FILES_TO_KEEP = ['.bbl', '.brf']
+
+
+def tex_expr_replace(expr, old, new):
+
+	if isinstance(expr, TexCmd):
+		"""
+		TexCmd stores children in `args` and throws exceptions if remove+insert is called directly on the expr itself
+		"""
+		for idx, val in enumerate(expr.args):
+			print(idx, val)
+			if val == old:
+				expr.args[idx] = new
+				return True
+			
+	else:
+		idx = expr.remove(old)
+		expr.insert(idx, new)
+
+		
+def tex_expr_remove(expr, old):
+	expr.remove(old)
+
 
 class TexSubmissionCleaner:
 	FileQueueEntry = namedtuple('FileQueueEntry', ['path', 'type'])
@@ -65,7 +87,7 @@ class TexSubmissionCleaner:
 
 	def setup_node_processors(self):
 		self.token_node_processors = [
-			self.process_token_remove_comment,
+			self.process_text_remove_comment,
 		]
 		self.node_processors = {}
 
@@ -109,7 +131,7 @@ class TexSubmissionCleaner:
 			elif path.is_file():
 				self.add_file_to_process(path, self.FILE_TYPE_OPAQUE)
 			else:
-				raise FileNotFoundError(f'File {path} requested by --keep-file does not exist')
+				raise FileNotFoundError(f'File {path_if_relative} requested by --keep-file does not exist')
 
 	def clear_out_dir(self):
 		if self.out_dir.exists():
@@ -193,7 +215,7 @@ class TexSubmissionCleaner:
 				print(f'File {path}: {e}')
 		
 		# go through the parse tree
-		self.process_tex_node(doc, parent_node = None, doc=doc)
+		self.process_tex_expr(doc.expr, parent_node = None, doc=doc)
 
 		# write processed tex
 		out_file_path = self.out_path(path)
@@ -212,18 +234,18 @@ class TexSubmissionCleaner:
 			if result_file_path.is_file():
 				self.add_file_to_process(result_file_path, self.FILE_TYPE_OPAQUE)
 
-	def apply_processors_to_tex_token(self, token, parent_node, doc):
+	def apply_processors_to_text(self, text, parent_node, doc):
 		action = NodeAction.Continue
 
 		for f in self.token_node_processors:
-			action = f(token, parent_node=parent_node, doc=doc, cleaner=self)
+			action = f(text, parent_node=parent_node, doc=doc, cleaner=self)
 			
 			if action == NodeAction.StopDescent:
 				return action
 
 		return action
 
-	def apply_processors_to_tex_node(self, tex_node, parent_node, doc):
+	def apply_processors_to_tex_expr(self, tex_node, parent_node, doc):
 		action = NodeAction.Continue
 
 		for f in self.node_processors.get(tex_node.name, []):
@@ -233,92 +255,99 @@ class TexSubmissionCleaner:
 				return action
 
 		return action
-	
-	def process_tex_node(self, tex_node, parent_node=None, doc=None):
-		"""
-		tex_node can be a full TexSoup.data.TexNode
-		or a TexSoup.utils.TokenWithPosition which only has text and position
-		"""
-			
-		if isinstance(tex_node, TokenWithPosition):
-			# TokenWithPosition is just a piece of text and does not have children
-			self.apply_processors_to_tex_token(tex_node, parent_node, doc)
 
-		#elif isinstance(tex_node, TexNode):
-		else:
-			if hasattr(tex_node, 'name'):
-				action = self.apply_processors_to_tex_node(tex_node, parent_node, doc)
+	def process_tex_expr(self, tex_expr, parent_node=None, doc=None):
+		"""
+		tex_expr can be a piece of text (TexText or Token)
+		or a TexExpr (command or environment)
+		"""
+		if isinstance(tex_expr, (TexText, Token)):
+			self.apply_processors_to_text(tex_expr, parent_node=parent_node, doc=doc)
+		
+		# everything else
+		elif isinstance(tex_expr, TexExpr):
+			
+			if hasattr(tex_expr, 'name'):
+				action = self.apply_processors_to_tex_expr(tex_expr, parent_node, doc)
 			else:
 				action = NodeAction.Continue
 
 			if action != NodeAction.StopDescent:
-				for child_node in tex_node.contents:
-					self.process_tex_node(child_node, parent_node=tex_node, doc=doc)
+				sub_nodes = []
+				if isinstance(tex_expr, TexCmd):
+					sub_nodes = tex_expr.args
+				else:
+					sub_nodes = tex_expr.all
 
-		# else:
-		# 	print('	Unknown node type:', type(tex_node), 'for node', str(tex_node).split('\n')[0])
+				for sub_node in sub_nodes:
+					self.process_tex_expr(sub_node, parent_node=tex_expr, doc=doc)
+
+		else:
+			raise NotImplementedError(f'Expr class {type(tex_expr)} for {tex_expr}')
+
+	
 
 	####################################################################################
 	# Node processing functions
 	####################################################################################
 
 	@staticmethod
-	def process_token_remove_comment(tex_token, cleaner, **_):
-		if tex_token.text.startswith('%'):
+	def process_text_remove_comment(text, parent_node, cleaner, **_):
+		if text.startswith('%'):
 			cleaner.stats['num_inline_comments'] += 1
-			tex_token.text = '%' if cleaner.keep_empty_comments else ''
+
+			if cleaner.keep_empty_comments:
+				tex_expr_replace(parent_node, text, '%')
+			else:
+				tex_expr_remove(parent_node, text)
+
 			return NodeAction.StopDescent
 
 	@staticmethod
-	def node_cmd_remove(node, cleaner, **_):
+	def node_cmd_remove(node, parent_node, cleaner, **_):
 		""" This node and its children are not written to the output file """
-		node.delete()
+
+		tex_expr_remove(parent_node, node)
+		# node.delete()
 		cleaner.stats['num_cmds_removed_' + node.name] += 1
 		return NodeAction.StopDescent
 
 	@staticmethod
-	def node_cmd_shortcircuit(node, cleaner, **_):
+	def node_cmd_shortcircuit(node, parent_node, cleaner, **_):
 		""" This is replaced with its children """
-		if node.args:
-			# Only replace when the command has children.
-			# if it does not have children, it is being declared with \newcommand
-			try:
-				node.replace_with(*node.contents)
-				cleaner.stats['num_cmds_shortcircuited_' + node.name] += 1
-			except TypeError as e:
-				# replace_with fails inside figure captions
-				print(e)
 
-				rarg_of_caption = node.parent.args[0]
-				rarg_contents = rarg_of_caption.contents
+		num_args = node.args.__len__()
+		if num_args == 0:
+			tex_expr_remove(parent_node, node)
+		elif num_args == 1:
+			tex_expr_replace(parent_node, node, node.args[0])
+		else:
+			raise ValueError(f'Short-circuit cmd has {num_args} args: {node} in {parent_node}')
 
-				for i, v in enumerate(rarg_contents):
-					if v == node.expr:
-						rarg_of_caption.contents = rarg_contents[:i] + list(node.contents) + rarg_contents[i+1:]
-						break
-
-		return NodeAction.StopDescent
+		return NodeAction.Continue
 
 	@staticmethod
-	def node_newcommand(node, cleaner, **_):
-		command_being_declared = node.args[0].value.lstrip('\\')
+	def node_newcommand(node, parent_node, cleaner, **_):
+		command_being_declared = str(node.args[0]).lstrip('{\\').rstrip('}')
 
 		if command_being_declared in cleaner.removed_command_names:
-			node.delete()
+			tex_expr_remove(parent_node, node)
 			cleaner.stats['num_declarations_removed'] += 1
 			return NodeAction.StopDescent
 
 	@staticmethod
 	def node_includegraphics(node, cleaner, **_):
 		for arg in node.args:
-			if arg.type == 'required':
-				graphics_path = cleaner.root_dir / arg.value
+			if arg.begin == '{':
+				value = ''.join(list(arg.args) + list(arg.contents))
+				graphics_path = cleaner.root_dir / value
 				if graphics_path.is_file():
 					cleaner.add_file_to_process(graphics_path, cleaner.FILE_TYPE_GRAPHICS)
 				else:
-					print(f'Failed to find graphic {arg.value} included from {cleaner.current_doc_path_relative}')
+					print(f'Failed to find graphic {value} included from {cleaner.current_doc_path_relative}')
 
-				return
+		return NodeAction.StopDescent
+			
 
 	@staticmethod
 	def find_included_document_path(root_dir, input_link):
@@ -339,7 +368,9 @@ class TexSubmissionCleaner:
 		input_args = list(node.contents)
 
 		if input_args.__len__() != 1:
-			print(f'Anomalous \\input, node.args should be length 1: {node}')
+			if node.name == 'input':
+				print(f'Anomalous \\input, node.args should be length 1: {node}')
+			# else it can be a \usepackage
 		else:
 			link_target = str(input_args[0])
 
