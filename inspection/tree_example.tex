@@ -1,0 +1,48 @@
+ 
+% top level comment
+
+What about \KL{that command}.
+
+Here is an % inline comment
+
+But not this innocent \% character
+
+%%% multi
+
+Double %% at the end
+
+\% real but % not here
+
+{standalone block}
+
+Line ending with empty comment %
+Line after empty comment %
+
+\caption{
+	Hello
+	% comment inside command
+	\comment{Comment inside command 2}
+}
+
+\includegraphics[width=\linewidth]{hello.png}
+
+\begin{overpic}[abs,unit=1mm,scale=.25,grid]{overpic.pdf}
+	\put(3,27){\color{blue}\huge\LaTeX}
+\end{overpic}
+
+
+
+\input{sub_document.tex}
+
+\comment{
+	Weird \stuff here
+}
+
+\newcommand{\kl}[1]{\ifdraft {\color{blue}{#1}} \else {#1}\fi}
+
+This cmd to be \kl{short circuited $x=1$}.
+
+This cmd to be \KL{(destroyed $x=2$)}.
+
+
+
